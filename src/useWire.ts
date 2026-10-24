@@ -25,10 +25,26 @@ export interface Wire {
 
 const TYPING_MS = 6000
 
-/** Edits and deletes seen while a column's history is in flight; the snapshot may predate them. */
+/**
+ * Edits and deletes seen in an open column. Either can arrive before the message it targets
+ * (new messages wait on sender and reply lookups), and a history snapshot can predate both.
+ */
 interface LiveChanges {
   edits: Map<string, Message>
   deleted: Set<string>
+}
+
+const REMEMBERED = 500
+
+function trim(seen: Map<string, unknown> | Set<string>) {
+  if (seen.size > REMEMBERED) seen.delete(seen.keys().next().value as string)
+}
+
+/** The newest version we know of `m`, or null if it was deleted. */
+function latest(changes: LiveChanges | undefined, m: Message): Message | null {
+  if (changes?.deleted.has(m.id)) return null
+  const edit = changes?.edits.get(m.id)
+  return edit ? { ...edit, replyTo: edit.replyTo ?? m.replyTo } : m
 }
 
 /** Account-wide deletes (no chat) only touch non-channel chats; channel ids are marked -100…. */
@@ -67,7 +83,7 @@ export function useWire(settings: Settings): Wire {
   const [retries, setRetries] = useState(0)
   const typingTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   const loaded = useRef(new Set<string>())
-  const pending = useRef(new Map<string, LiveChanges>())
+  const changesFor = useRef(new Map<string, LiveChanges>())
   /** The service whose results may still land in state. Anything else is stale. */
   const live = useRef<ChatService | null>(null)
 
@@ -79,7 +95,7 @@ export function useWire(settings: Settings): Wire {
     setLoadErrors({})
     setDetail(undefined)
     loaded.current = new Set()
-    pending.current = new Map()
+    changesFor.current = new Map()
     if (!configured) {
       setStatus('idle')
       return
@@ -130,18 +146,25 @@ export function useWire(settings: Settings): Wire {
             setTimeout(() => clearTyping(e.chatId), TYPING_MS),
           )
           return
-        case 'edited':
-          pending.current.get(e.message.chatId)?.edits.set(e.message.id, e.message)
+        case 'edited': {
+          const edits = changesFor.current.get(e.message.chatId)?.edits
+          if (edits) {
+            edits.set(e.message.id, e.message)
+            trim(edits)
+          }
           setMessages((all) => {
             const list = own(all, e.message.chatId)
             if (!list?.some((m) => m.id === e.message.id)) return all
             return { ...all, [e.message.chatId]: list.map((m) => (m.id === e.message.id ? { ...e.message, replyTo: m.replyTo ?? e.message.replyTo } : m)) }
           })
           return
+        }
         case 'deleted': {
           const gone = new Set(e.ids)
-          for (const [chatId, p] of pending.current) {
-            if (deleteApplies(e.chatId, chatId)) for (const id of e.ids) p.deleted.add(id)
+          for (const [chatId, c] of changesFor.current) {
+            if (!deleteApplies(e.chatId, chatId)) continue
+            for (const id of e.ids) c.deleted.add(id)
+            trim(c.deleted)
           }
           setMessages((all) => {
             const next: Record<string, Message[]> = {}
@@ -156,9 +179,10 @@ export function useWire(settings: Settings): Wire {
           return
         }
         case 'message': {
-          const m = e.message
-          const column = columnFor(m.chatId)
+          const column = columnFor(e.message.chatId)
           if (!column) return
+          const m = latest(changesFor.current.get(e.message.chatId), e.message)
+          if (!m) return
           // Buffer even before history arrives; the history merge dedupes by id.
           setMessages((all) => ({ ...all, [m.chatId]: appendUnique(own(all, m.chatId) ?? [], m) }))
           clearTyping(m.chatId)
@@ -221,51 +245,53 @@ export function useWire(settings: Settings): Wire {
     if (!service || status !== 'ready') return
     const ids = columnIds.split('\n').filter(Boolean)
     // A closed column forgets its log, so reopening it fetches fresh history.
+    // A failed load stays in `loaded` (only retry takes it out), so this covers it too.
     for (const id of [...loaded.current]) {
       if (ids.includes(id)) continue
       loaded.current.delete(id)
-      pending.current.delete(id)
+      changesFor.current.delete(id)
       setMessages((all) => without(all, id))
+      setLoadErrors((errs) => without(errs, id))
     }
-    setLoadErrors((errs) => {
-      const stale = Object.keys(errs).filter((id) => !ids.includes(id))
-      return stale.length ? stale.reduce(without, errs) : errs
-    })
     for (const id of ids) {
       if (loaded.current.has(id)) continue
       loaded.current.add(id)
-      const changes: LiveChanges = { edits: new Map(), deleted: new Set() }
-      pending.current.set(id, changes)
+      let changes = changesFor.current.get(id)
+      if (!changes) {
+        changes = { edits: new Map(), deleted: new Set() }
+        changesFor.current.set(id, changes)
+      }
+      const mine = changes
+      // Closing and reopening the column swaps in a fresh record, so a result for the old one is dropped.
+      const stale = () => live.current !== service || changesFor.current.get(id) !== mine
       service
         .history(id)
         .then((list) => {
-          if (live.current !== service || pending.current.get(id) !== changes) return
-          pending.current.delete(id)
+          if (stale()) return
           setLoadErrors((errs) => without(errs, id))
           setMessages((all) => {
             // Anything already in the column arrived live, so it is at least as fresh as the snapshot.
             const current = own(all, id) ?? []
             const fresh = new Map(current.map((m) => [m.id, m]))
-            const merged = list
-              .filter((m) => !changes.deleted.has(m.id))
-              .map((m) => {
-                const newer = fresh.get(m.id) ?? changes.edits.get(m.id)
-                return newer ? { ...newer, replyTo: newer.replyTo ?? m.replyTo } : m
-              })
+            const merged = list.flatMap((m) => {
+              const known = fresh.get(m.id)
+              const next = latest(mine, known ? { ...known, replyTo: known.replyTo ?? m.replyTo } : m)
+              return next ? [next] : []
+            })
             const inSnapshot = new Set(list.map((m) => m.id))
-            return { ...all, [id]: merged.concat(current.filter((m) => !inSnapshot.has(m.id))) }
+            const extra = current.filter((m) => !inSnapshot.has(m.id) && !mine.deleted.has(m.id))
+            return { ...all, [id]: merged.concat(extra) }
           })
         })
         .catch((err) => {
-          if (live.current !== service || pending.current.get(id) !== changes) return
-          pending.current.delete(id)
-          loaded.current.delete(id)
+          if (stale()) return
           setLoadErrors((errs) => ({ ...errs, [id]: String(err?.message ?? err) }))
         })
     }
   }, [service, status, columnIds, retries])
 
   const retryHistory = useCallback((chatId: string) => {
+    loaded.current.delete(chatId)
     setLoadErrors((errs) => without(errs, chatId))
     setRetries((n) => n + 1)
   }, [])
