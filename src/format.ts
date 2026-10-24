@@ -1,3 +1,14 @@
+import type { ConnStatus } from './service/types'
+
+export const STATUS_TEXT: Record<ConnStatus, string> = {
+  idle: 'not set up',
+  connecting: 'connecting',
+  ready: 'live',
+  'needs-login': 'signed out',
+  offline: 'offline',
+  error: 'error',
+}
+
 export function clockTime(ms: number, clock: '24h' | '12h') {
   const d = new Date(ms)
   const h = d.getHours()
@@ -12,6 +23,17 @@ export function dayKey(ms: number) {
 
 export function dayLabel(ms: number) {
   return new Date(ms).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).toLowerCase()
+}
+
+/** A tab-label-sized, url-ish version of a title. */
+export function slug(s: string) {
+  return (
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 16) || 'chat'
+  )
 }
 
 /** The short name shown in the handle column: first word, lower case. */

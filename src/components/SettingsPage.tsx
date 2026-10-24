@@ -13,6 +13,7 @@ import {
 } from '../settings'
 import type { Wire } from '../useWire'
 import { askToNotify, tick } from '../alerts'
+import { STATUS_TEXT } from '../format'
 
 type Option<T> = readonly [value: T, label: string]
 
@@ -40,6 +41,18 @@ function Row({ k, htmlFor, children }: { k: string; htmlFor?: string; children: 
       )}
       <span className="row-val">{children}</span>
     </div>
+  )
+}
+
+function Step({ label, done, now, children }: { label: string; done: boolean; now: boolean; children: ReactNode }) {
+  return (
+    <li className={`row step${done ? ' step--done' : now ? ' step--now' : ''}`} aria-current={now ? 'step' : undefined}>
+      <span className="row-key">
+        <span aria-hidden="true">{done ? '[x]' : '[ ]'}</span> {label}
+        {done && <span className="sr"> (done)</span>}
+      </span>
+      <span className="row-val row-inline">{children}</span>
+    </li>
   )
 }
 
@@ -72,6 +85,14 @@ export function SettingsPage({ settings, wire }: { settings: Settings; wire: Wir
   const hasSession = !!loadSession()
   const keysValid = /^\d{3,12}$/.test(apiId.trim()) && /^[0-9a-f]{32}$/i.test(apiHash.trim())
   const keysChanged = apiId.trim() !== settings.apiId || apiHash.trim() !== settings.apiHash
+  const hasKeys = !!settings.apiId && !!settings.apiHash
+  const signedIn = !!me || wire.status === 'ready'
+  const setupDone = hasKeys && signedIn && cols.length > 0
+  const toKeys = () => {
+    const field = document.getElementById(apiId.trim() ? 's-apihash' : 's-apiid')
+    field?.scrollIntoView({ block: 'center' })
+    field?.focus()
+  }
 
   const moveCol = (i: number, dir: -1 | 1) => {
     const next = [...cols]
@@ -106,11 +127,47 @@ export function SettingsPage({ settings, wire }: { settings: Settings; wire: Wir
         <p className="comment"># demo runs on made-up chats. telegram signs in as you.</p>
       </Section>
 
+      {settings.mode === 'telegram' && !setupDone && (
+        <Section name="setup">
+          <p className="comment"># three steps, once. each link takes you to the step.</p>
+          <ol className="steps">
+            <Step label="keys" done={hasKeys} now={!hasKeys}>
+              {hasKeys ? (
+                'saved in this browser'
+              ) : (
+                <>
+                  <a className="btn btn--ink" href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer">
+                    get keys ↗
+                  </a>
+                  <button type="button" className="btn" onClick={toKeys}>
+                    enter them ↓
+                  </button>
+                </>
+              )}
+            </Step>
+            <Step label="sign in" done={signedIn} now={hasKeys && !signedIn}>
+              {signedIn ? (
+                me ? `as ${me.name}` : 'signed in'
+              ) : (
+                <a className={`btn${hasKeys ? ' btn--ink' : ''}`} href="#/">
+                  sign in →
+                </a>
+              )}
+            </Step>
+            <Step label="a chat" done={cols.length > 0} now={signedIn && cols.length === 0}>
+              <a className={`btn${signedIn ? ' btn--ink' : ''}`} href="#/add">
+                + add column
+              </a>
+            </Step>
+          </ol>
+        </Section>
+      )}
+
       <Section name="connection">
         <Row k="status">
-          <span className={`status status--${wire.status}`}>
+          <span className={`status status--${wire.status}`} title={wire.detail}>
             <span className="dot" aria-hidden="true" />
-            {me ? `connected as ${me.name}` : settings.mode === 'demo' ? 'demo mode' : wire.status}
+            {me ? `connected as ${me.name}` : settings.mode === 'demo' ? 'demo mode' : STATUS_TEXT[wire.status]}
           </span>
         </Row>
         <form

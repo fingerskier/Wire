@@ -1,4 +1,5 @@
-import { Emitter, type ChatService, type ChatSummary, type LoginSteps, type Message } from './types'
+import { slug } from '../format'
+import { Emitter, type ChatService, type ChatSummary, type LoginSteps, type Message, type NewGroup } from './types'
 
 // Everything here is made up. It lets the deck run with no Telegram account.
 
@@ -76,6 +77,9 @@ export class DemoService implements ChatService {
   private events = new Emitter()
   private store = new Map<string, Message[]>()
   private timers = new Set<ReturnType<typeof setTimeout>>()
+  /** Groups made this session. Like everything else here they're gone on reload. */
+  private made: ChatSummary[] = []
+  private members = new Map<string, string[]>()
 
   constructor() {
     const now = Date.now()
@@ -117,7 +121,7 @@ export class DemoService implements ChatService {
   }
 
   async listChats() {
-    return CHATS.map((c) => ({ ...c }))
+    return [...this.made, ...CHATS].map((c) => ({ ...c }))
   }
 
   async history(chatId: string) {
@@ -133,6 +137,18 @@ export class DemoService implements ChatService {
 
   async markRead() {}
 
+  async createGroup(title: string, memberIds: string[]): Promise<NewGroup> {
+    // Columns outlive a reload but `seq` restarts, so the id must not come from it.
+    const id = `group-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+    const chat: ChatSummary = { id, title, kind: 'group', handle: '#' + slug(title), unread: 0 }
+    const crowd = memberIds.filter((m) => Object.hasOwn(PEOPLE, m))
+    this.made.unshift(chat)
+    this.members.set(chat.id, crowd)
+    this.push({ id: nextId(), chatId: chat.id, senderId: ME.id, senderName: ME.name, out: true, date: Date.now(), text: 'created the group', service: true })
+    if (crowd.length) this.replyTo(chat.id)
+    return { chat: { ...chat }, notAdded: [] }
+  }
+
   on(listener: Parameters<ChatService['on']>[0]) {
     return this.events.on(listener)
   }
@@ -144,9 +160,11 @@ export class DemoService implements ChatService {
   }
 
   private replyTo(chatId: string) {
-    const chat = CHATS.find((c) => c.id === chatId)
+    const chat = [...this.made, ...CHATS].find((c) => c.id === chatId)
     if (!chat) return
-    const who = chat.kind === 'dm' ? chatId : pick(Object.keys(PEOPLE))
+    const crowd = this.members.get(chatId) ?? Object.keys(PEOPLE)
+    if (!crowd.length) return
+    const who = chat.kind === 'dm' ? chatId : pick(crowd)
     this.later(900 + Math.random() * 1200, () => {
       this.events.emit({ type: 'typing', chatId, name: PEOPLE[who] })
       this.later(1500 + Math.random() * 1500, () => this.incoming(chatId, who, pick(REPLIES[who])))

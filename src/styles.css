@@ -745,6 +745,33 @@ a {
   white-space: nowrap;
 }
 
+.pick--new .pick-handle,
+.pick[aria-pressed='true'] .pick-handle {
+  color: var(--accent-text);
+}
+
+.pick-list .log-note {
+  padding: 0 6px;
+}
+
+/* The new-group form shares the dialog's flex column, so its people list scrolls and the button stays put. */
+.dialog-form {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dialog-form > .btn--sm {
+  align-self: flex-start;
+}
+
+.dialog-form .actions,
+.dialog-form .log-note {
+  margin: 0;
+  padding: 0;
+}
+
 /* ---------- settings + login ---------- */
 
 .page {
@@ -830,6 +857,25 @@ a {
   padding: 8px 0;
 }
 
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step .row-key {
+  white-space: nowrap;
+}
+
+.step--done .row-key {
+  color: var(--muted);
+}
+
+.step--now .row-key {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -859,6 +905,11 @@ a {
 
   .row {
     grid-template-columns: 10ch minmax(0, 1fr);
+  }
+
+  /* "[ ] sign in" needs the extra width. */
+  .row.step {
+    grid-template-columns: 12ch minmax(0, 1fr);
   }
 }
 
