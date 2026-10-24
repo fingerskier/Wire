@@ -29,22 +29,31 @@ const TYPING_MS = 6000
  * Edits and deletes seen in an open column. Either can arrive before the message it targets
  * (new messages wait on sender and reply lookups), and a history snapshot can predate both.
  */
-interface LiveChanges {
+interface Changes {
   edits: Map<string, Message>
   deleted: Set<string>
 }
 
+interface LiveChanges extends Changes {
+  /** A history request is in flight. Its snapshot may predate any of these, so none are forgotten until it lands. */
+  loading: boolean
+}
+
 const REMEMBERED = 500
 
-function trim(seen: Map<string, unknown> | Set<string>) {
-  if (seen.size > REMEMBERED) seen.delete(seen.keys().next().value as string)
+function trim(c: LiveChanges) {
+  if (c.loading) return
+  for (const seen of [c.edits, c.deleted]) {
+    while (seen.size > REMEMBERED) seen.delete(seen.keys().next().value as string)
+  }
 }
 
 /** The newest version we know of `m`, or null if it was deleted. */
-function latest(changes: LiveChanges | undefined, m: Message): Message | null {
+function latest(changes: Changes | undefined, m: Message): Message | null {
   if (changes?.deleted.has(m.id)) return null
   const edit = changes?.edits.get(m.id)
-  return edit ? { ...edit, replyTo: edit.replyTo ?? m.replyTo } : m
+  // Edits arrive without a fetched reply (just a placeholder), so keep the preview we already resolved.
+  return edit ? { ...edit, replyTo: m.replyTo ?? edit.replyTo } : m
 }
 
 /** Account-wide deletes (no chat) only touch non-channel chats; channel ids are marked -100…. */
@@ -147,10 +156,10 @@ export function useWire(settings: Settings): Wire {
           )
           return
         case 'edited': {
-          const edits = changesFor.current.get(e.message.chatId)?.edits
-          if (edits) {
-            edits.set(e.message.id, e.message)
-            trim(edits)
+          const changes = changesFor.current.get(e.message.chatId)
+          if (changes) {
+            changes.edits.set(e.message.id, e.message)
+            trim(changes)
           }
           setMessages((all) => {
             const list = own(all, e.message.chatId)
@@ -164,7 +173,7 @@ export function useWire(settings: Settings): Wire {
           for (const [chatId, c] of changesFor.current) {
             if (!deleteApplies(e.chatId, chatId)) continue
             for (const id of e.ids) c.deleted.add(id)
-            trim(c.deleted)
+            trim(c)
           }
           setMessages((all) => {
             const next: Record<string, Message[]> = {}
@@ -258,15 +267,23 @@ export function useWire(settings: Settings): Wire {
       loaded.current.add(id)
       let changes = changesFor.current.get(id)
       if (!changes) {
-        changes = { edits: new Map(), deleted: new Set() }
+        changes = { edits: new Map(), deleted: new Set(), loading: false }
         changesFor.current.set(id, changes)
       }
       const mine = changes
+      mine.loading = true
+      const settle = () => {
+        mine.loading = false
+        trim(mine)
+      }
       // Closing and reopening the column swaps in a fresh record, so a result for the old one is dropped.
       const stale = () => live.current !== service || changesFor.current.get(id) !== mine
       service
         .history(id)
         .then((list) => {
+          // The merge below runs later, at render, so copy what it needs before anything can be trimmed.
+          const seen: Changes = { edits: new Map(mine.edits), deleted: new Set(mine.deleted) }
+          settle()
           if (stale()) return
           setLoadErrors((errs) => without(errs, id))
           setMessages((all) => {
@@ -275,15 +292,16 @@ export function useWire(settings: Settings): Wire {
             const fresh = new Map(current.map((m) => [m.id, m]))
             const merged = list.flatMap((m) => {
               const known = fresh.get(m.id)
-              const next = latest(mine, known ? { ...known, replyTo: known.replyTo ?? m.replyTo } : m)
+              const next = latest(seen, known ? { ...known, replyTo: known.replyTo ?? m.replyTo } : m)
               return next ? [next] : []
             })
             const inSnapshot = new Set(list.map((m) => m.id))
-            const extra = current.filter((m) => !inSnapshot.has(m.id) && !mine.deleted.has(m.id))
+            const extra = current.filter((m) => !inSnapshot.has(m.id) && !seen.deleted.has(m.id))
             return { ...all, [id]: merged.concat(extra) }
           })
         })
         .catch((err) => {
+          settle()
           if (stale()) return
           setLoadErrors((errs) => ({ ...errs, [id]: String(err?.message ?? err) }))
         })
