@@ -1,10 +1,12 @@
 import { Api, TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { NewMessage, Raw, type NewMessageEvent } from 'telegram/events'
+import { EditedMessage, type EditedMessageEvent } from 'telegram/events/EditedMessage'
+import { DeletedMessage, type DeletedMessageEvent } from 'telegram/events/DeletedMessage'
 import { LogLevel } from 'telegram/extensions/Logger'
 import { getDisplayName, getPeerId } from 'telegram/Utils'
 import type { Entity } from 'telegram/define'
-import { Emitter, type ChatKind, type ChatService, type ChatSummary, type LoginSteps, type Me, type Message } from './types'
+import { Emitter, type ChatKind, type ChatService, type ChatSummary, type LoginSteps, type Me, type Message, type ServiceEvent } from './types'
 
 /**
  * MTProto user client (GramJS) over WebSocket, straight from the browser to
@@ -22,6 +24,8 @@ export class TelegramService implements ChatService {
   private phone = ''
   private phoneCodeHash = ''
   private handlersOn = false
+  /** Set the moment the app lets go of this service; late async work must not touch app state after that. */
+  private disposed = false
   private readonly apiId: number
   private readonly apiHash: string
   private readonly onSession: (session: string) => void
@@ -42,31 +46,35 @@ export class TelegramService implements ChatService {
   }
 
   async start() {
-    this.events.emit({ type: 'status', status: 'connecting' })
+    this.emit({ type: 'status', status: 'connecting' })
     try {
       await this.client.connect()
+      if (this.disposed) return
       if (await this.client.checkAuthorization()) await this.ready()
-      else this.events.emit({ type: 'status', status: 'needs-login' })
+      else this.emit({ type: 'status', status: 'needs-login' })
     } catch (err) {
-      this.events.emit({ type: 'status', status: 'error', detail: errorText(err) })
+      this.emit({ type: 'status', status: 'error', detail: errorText(err) })
     }
   }
 
+  /** Synchronously marks the service dead before awaiting anything, so an in-flight login can't re-save a wiped session. */
   async stop() {
+    if (this.disposed) return
+    this.disposed = true
     if (this.handlersOn) {
       this.client.removeEventHandler(this.onNewMessage, new NewMessage({}))
+      this.client.removeEventHandler(this.onEdited, new EditedMessage({}))
+      this.client.removeEventHandler(this.onDeleted, new DeletedMessage({}))
       this.client.removeEventHandler(this.onRaw, new Raw({}))
       this.handlersOn = false
     }
     await this.client.destroy().catch(() => {})
   }
 
+  /** Ends the authorization on Telegram's side. Throws (and keeps the session) if Telegram didn't confirm. */
   async logout() {
-    try {
-      await this.client.invoke(new Api.auth.LogOut())
-    } finally {
-      this.onSession('')
-    }
+    await this.client.invoke(new Api.auth.LogOut())
+    this.onSession('')
   }
 
   me() {
@@ -116,8 +124,9 @@ export class TelegramService implements ChatService {
     }
   }
 
-  async listChats(): Promise<ChatSummary[]> {
-    const dialogs = await this.client.getDialogs({ limit: 200 })
+  /** Without a limit this pages through every dialog, so chats far down the list can still be columns. */
+  async listChats(limit?: number): Promise<ChatSummary[]> {
+    const dialogs = await this.client.getDialogs(limit ? { limit } : {})
     const out: ChatSummary[] = []
     for (const d of dialogs) {
       if (!d.entity || d.id === undefined) continue
@@ -170,15 +179,24 @@ export class TelegramService implements ChatService {
 
   private async ready() {
     const me = await this.client.getMe()
+    if (this.disposed) return
     this.meInfo = { id: me.id.toString(), name: [me.firstName, me.lastName].filter(Boolean).join(' ') || me.username || 'me' }
     this.onSession(this.session.save())
-    await this.listChats()
+    // Warm the entity cache with the most recent chats; peer() pages further on demand.
+    await this.listChats(100)
+    if (this.disposed) return
     if (!this.handlersOn) {
       this.client.addEventHandler(this.onNewMessage, new NewMessage({}))
+      this.client.addEventHandler(this.onEdited, new EditedMessage({}))
+      this.client.addEventHandler(this.onDeleted, new DeletedMessage({}))
       this.client.addEventHandler(this.onRaw, new Raw({}))
       this.handlersOn = true
     }
-    this.events.emit({ type: 'status', status: 'ready' })
+    this.emit({ type: 'status', status: 'ready' })
+  }
+
+  private emit(e: ServiceEvent) {
+    if (!this.disposed) this.events.emit(e)
   }
 
   private async peer(chatId: string) {
@@ -202,13 +220,58 @@ export class TelegramService implements ChatService {
         if (chat) this.entities.set(chatId, chat)
       }
       const reply = m.replyToMsgId ? await m.getReplyMessage() : undefined
-      this.events.emit({ type: 'message', message: this.convert(m, chatId, reply) })
+      this.emit({ type: 'message', message: this.convert(m, chatId, reply) })
     } catch {
-      this.events.emit({ type: 'message', message: this.convert(m, chatId) })
+      this.emit({ type: 'message', message: this.convert(m, chatId) })
     }
   }
 
+  private onEdited = async (event: EditedMessageEvent) => {
+    const m = event.message
+    const chatId = m.chatId?.toString()
+    if (!chatId) return
+    try {
+      if (!m.sender) await m.getSender()
+    } catch {
+      // Name falls back to the chat title.
+    }
+    this.emit({ type: 'edited', message: this.convert(m, chatId) })
+  }
+
+  private onDeleted = (event: DeletedMessageEvent) => {
+    // Telegram only names the chat for channels and supergroups.
+    const chatId = event.peer ? getPeerId(event.peer) : undefined
+    this.emit({ type: 'deleted', chatId, ids: event.deletedIds.map(String) })
+  }
+
   private onRaw = async (update: unknown) => {
+    // NewMessage skips service messages (joins, renames…); pick them up here.
+    if ((update instanceof Api.UpdateNewMessage || update instanceof Api.UpdateNewChannelMessage) && update.message instanceof Api.MessageService) {
+      const m = update.message
+      const chatId = getPeerId(m.peerId)
+      let senderName = this.titles.get(chatId) ?? 'someone'
+      if (m.fromId) {
+        try {
+          senderName = getDisplayName(await this.client.getEntity(m.fromId)) || senderName
+        } catch {
+          // Unknown sender: keep the fallback.
+        }
+      }
+      this.emit({
+        type: 'message',
+        message: {
+          id: String(m.id),
+          chatId,
+          senderId: m.fromId ? getPeerId(m.fromId) : chatId,
+          senderName,
+          out: !!m.out,
+          date: m.date * 1000,
+          text: describeAction(m.action),
+          service: true,
+        },
+      })
+      return
+    }
     let chatId: string | undefined
     let from: Api.TypePeer | undefined
     if (update instanceof Api.UpdateUserTyping) {
@@ -228,7 +291,7 @@ export class TelegramService implements ChatService {
     } catch {
       // Unknown user: keep the generic name.
     }
-    this.events.emit({ type: 'typing', chatId, name })
+    this.emit({ type: 'typing', chatId, name })
   }
 
   private convert(m: Api.Message, chatId: string, reply?: Api.Message): Message {

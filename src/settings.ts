@@ -92,21 +92,35 @@ export function sanitize(input: unknown): Settings {
   if (cols && typeof cols === 'object') {
     for (const mode of ['demo', 'telegram'] as const) {
       const list = cols[mode]
-      if (Array.isArray(list)) s.columns[mode] = list.filter(isColumn).map(cleanColumn)
+      if (!Array.isArray(list)) continue
+      const seen = new Set<string>()
+      s.columns[mode] = list
+        .filter((c): c is ColumnConf => isColumn(c, mode))
+        .filter((c) => !seen.has(c.chatId) && !!seen.add(c.chatId))
+        .map(cleanColumn)
     }
   }
   return s
 }
 
-function isColumn(v: unknown): v is ColumnConf {
+// Telegram ids are marked numeric peer ids (-100… for channels); demo ids are short words.
+const CHAT_ID = { telegram: /^-?\d{1,20}$/, demo: /^[a-z][a-z0-9-]{0,31}$/ }
+
+function isColumn(v: unknown, mode: Settings['mode']): v is ColumnConf {
   if (!v || typeof v !== 'object') return false
   const c = v as Record<string, unknown>
-  return typeof c.chatId === 'string' && typeof c.title === 'string' && typeof c.handle === 'string'
+  return (
+    typeof c.chatId === 'string' &&
+    CHAT_ID[mode].test(c.chatId) &&
+    !(c.chatId in Object.prototype) &&
+    typeof c.title === 'string' &&
+    typeof c.handle === 'string'
+  )
 }
 
 function cleanColumn(c: ColumnConf): ColumnConf {
   return {
-    chatId: c.chatId.slice(0, 64),
+    chatId: c.chatId,
     title: c.title.slice(0, 128),
     handle: c.handle.slice(0, 64),
     kind: (['group', 'dm', 'channel'] as const).includes(c.kind) ? c.kind : 'group',

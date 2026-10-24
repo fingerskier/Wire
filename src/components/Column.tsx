@@ -161,13 +161,15 @@ function Composer({ chatId, handle, enterSends, onSend, onFocus }: { chatId: str
   }, [text])
 
   const submit = async () => {
-    const value = text.trim()
+    const sent = text
+    const value = sent.trim()
     if (!value || busy) return
     setBusy(true)
     setError('')
     try {
       await onSend(value)
-      setText('')
+      // Keep anything typed while the send was in flight.
+      setText((now) => (now.startsWith(sent) ? now.slice(sent.length).trimStart() : now))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {

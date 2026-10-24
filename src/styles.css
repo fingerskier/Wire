@@ -656,28 +656,29 @@ a {
 
 /* ---------- add-column dialog ---------- */
 
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 10;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 10vh 16px 16px;
+.dialog {
+  width: min(540px, calc(100% - 32px));
+  max-height: 78vh;
+  margin: 10vh auto auto;
+  padding: 0;
+  border: 1px solid var(--ink);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+.dialog::backdrop {
   background: rgba(20, 20, 20, 0.35);
 }
 
-.dialog {
-  width: min(540px, 100%);
-  max-height: 78vh;
+/* The dialog itself is the backdrop hit area; content lives in the body. */
+.dialog-body {
+  max-height: inherit;
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 10px 16px 16px;
-  border: 1px solid var(--ink);
-  border-radius: 6px;
-  background: var(--bg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
 }
 
 .dialog-head {
@@ -692,6 +693,7 @@ a {
 }
 
 .pick-list {
+  min-height: 0;
   list-style: none;
   margin: 0;
   padding: 0;

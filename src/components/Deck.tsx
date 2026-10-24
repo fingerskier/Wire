@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChatSummary, ConnStatus } from '../service/types'
 import { setColumns, type ColumnConf, type Settings } from '../settings'
-import type { Wire } from '../useWire'
+import { own, type Wire } from '../useWire'
 import { Column } from './Column'
 
 const STATUS_TEXT: Record<ConnStatus, string> = {
@@ -98,7 +98,7 @@ export function Deck({ settings, wire, adding, setAdding }: Props) {
         {columns.length > 0 && (
           <nav className="tabs" aria-label="Columns">
             {columns.map((c) => {
-              const n = wire.unread[c.chatId] ?? 0
+              const n = own(wire.unread, c.chatId) ?? 0
               return (
                 <button
                   key={c.chatId}
@@ -137,9 +137,9 @@ export function Deck({ settings, wire, adding, setAdding }: Props) {
           <Column
             key={c.chatId}
             column={c}
-            messages={wire.messages[c.chatId]}
-            typing={wire.typing[c.chatId]}
-            unread={wire.unread[c.chatId] ?? 0}
+            messages={own(wire.messages, c.chatId)}
+            typing={own(wire.typing, c.chatId)}
+            unread={own(wire.unread, c.chatId) ?? 0}
             settings={settings}
             isFirst={i === 0}
             isLast={i === columns.length - 1}
@@ -181,12 +181,17 @@ interface AddProps {
 
 function AddColumn({ chats, existing, status, onRefresh, onPick, onClose }: AddProps) {
   const [q, setQ] = useState('')
+  const dialogRef = useRef<HTMLDialogElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // A native modal dialog: it traps focus, makes the deck inert and handles Escape.
   useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null
+    dialogRef.current?.showModal()
     inputRef.current?.focus()
     onRefresh().catch(() => {})
-    // Refresh once per opening, not on every render.
+    return () => opener?.focus?.()
+    // Once per opening, not on every render.
   }, [])
 
   const needle = q.trim().toLowerCase()
@@ -195,8 +200,17 @@ function AddColumn({ chats, existing, status, onRefresh, onPick, onClose }: AddP
     .filter((c) => !needle || c.title.toLowerCase().includes(needle) || c.handle.includes(needle))
 
   return (
-    <div className="overlay" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="add-title" onKeyDown={(e) => e.key === 'Escape' && onClose()}>
+    <dialog
+      ref={dialogRef}
+      className="dialog"
+      aria-labelledby="add-title"
+      onCancel={(e) => {
+        e.preventDefault()
+        onClose()
+      }}
+      onPointerDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="dialog-body">
         <header className="dialog-head">
           <h2 id="add-title">/add column</h2>
           <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
@@ -227,6 +241,6 @@ function AddColumn({ chats, existing, status, onRefresh, onPick, onClose }: AddP
           </ul>
         )}
       </div>
-    </div>
+    </dialog>
   )
 }

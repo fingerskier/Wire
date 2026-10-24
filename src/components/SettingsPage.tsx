@@ -65,6 +65,8 @@ export function SettingsPage({ settings, wire }: { settings: Settings; wire: Wir
   const [apiHash, setApiHash] = useState(settings.apiHash)
   const [confirmReset, setConfirmReset] = useState(false)
   const [importError, setImportError] = useState('')
+  const [signOutError, setSignOutError] = useState('')
+  const [signingOut, setSigningOut] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const me = wire.service?.mode === 'telegram' ? wire.service.me() : null
   const hasSession = !!loadSession()
@@ -140,8 +142,23 @@ export function SettingsPage({ settings, wire }: { settings: Settings; wire: Wir
           <span className="row-inline">
             {hasSession ? 'stored in this browser' : 'none'}
             {me && (
-              <button type="button" className="btn" onClick={() => void wire.logout()}>
-                sign out
+              <button
+                type="button"
+                className="btn"
+                disabled={signingOut}
+                onClick={async () => {
+                  setSigningOut(true)
+                  setSignOutError('')
+                  try {
+                    await wire.logout()
+                  } catch (err) {
+                    setSignOutError(err instanceof Error ? err.message : String(err))
+                  } finally {
+                    setSigningOut(false)
+                  }
+                }}
+              >
+                {signingOut ? 'signing out…' : 'sign out'}
               </button>
             )}
             {hasSession && (
@@ -151,6 +168,13 @@ export function SettingsPage({ settings, wire }: { settings: Settings; wire: Wir
             )}
           </span>
         </Row>
+        {signOutError && (
+          <p className="comment comment--warn" role="alert">
+            # sign out failed ({signOutError}), so the session is still active on telegram. try again, or wipe to forget it in this
+            browser only.
+          </p>
+        )}
+        <p className="comment"># wipe forgets the session here; sign out also ends it on telegram</p>
       </Section>
 
       <Section name="columns">

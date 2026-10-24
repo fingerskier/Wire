@@ -37,6 +37,9 @@ export interface Me {
 
 export type ServiceEvent =
   | { type: 'message'; message: Message }
+  | { type: 'edited'; message: Message }
+  /** Without a chatId the ids are account-wide (private chats and basic groups). */
+  | { type: 'deleted'; chatId?: string; ids: string[] }
   | { type: 'typing'; chatId: string; name: string }
   | { type: 'status'; status: ConnStatus; detail?: string }
 
