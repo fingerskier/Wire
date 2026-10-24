@@ -1,0 +1,11 @@
+{
+  "name": "Wire",
+  "short_name": "Wire",
+  "description": "A deck of Telegram chats for the crew",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F4F5F2",
+  "theme_color": "#141414",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
