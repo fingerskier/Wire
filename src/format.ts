@@ -25,6 +25,17 @@ export function dayLabel(ms: number) {
   return new Date(ms).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).toLowerCase()
 }
 
+/** A tab-label-sized, url-ish version of a title. */
+export function slug(s: string) {
+  return (
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 16) || 'chat'
+  )
+}
+
 /** The short name shown in the handle column: first word, lower case. */
 export function shortName(name: string) {
   return (name.trim().split(/\s+/)[0] || '?').toLowerCase().slice(0, 12)

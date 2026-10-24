@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChatSummary, ConnStatus } from '../service/types'
+import type { ChatSummary, ConnStatus, NewGroup } from '../service/types'
 import { STATUS_TEXT } from '../format'
 import { setColumns, type ColumnConf, type Settings } from '../settings'
 import { own, type Wire } from '../useWire'
@@ -57,11 +57,15 @@ export function Deck({ settings, wire, adding, setAdding }: Props) {
 
   const close = (i: number) => setColumns(mode, columns.filter((_, k) => k !== i))
 
-  const add = (chat: ChatSummary) => {
+  const open = (chat: ChatSummary) => {
     const col: ColumnConf = { chatId: chat.id, title: chat.title, handle: chat.handle, kind: chat.kind, width: 'normal' }
     setColumns(mode, [...columns, col])
-    setAdding(false)
     setTimeout(() => jump(chat.id), 60)
+  }
+
+  const add = (chat: ChatSummary) => {
+    open(chat)
+    setAdding(false)
   }
 
   return (
@@ -155,8 +159,11 @@ export function Deck({ settings, wire, adding, setAdding }: Props) {
           chats={wire.chats}
           existing={new Set(columns.map((c) => c.chatId))}
           status={wire.status}
+          selfId={wire.service?.me()?.id}
           onRefresh={wire.refreshChats}
           onPick={add}
+          onCreate={wire.createGroup}
+          onCreated={open}
           onClose={() => setAdding(false)}
         />
       )}
@@ -168,12 +175,17 @@ interface AddProps {
   chats: ChatSummary[]
   existing: Set<string>
   status: ConnStatus
+  selfId?: string
   onRefresh(): Promise<void>
   onPick(chat: ChatSummary): void
+  onCreate(title: string, memberIds: string[]): Promise<NewGroup>
+  /** Opens the new group's column but leaves the dialog up, in case there's news about who wasn't added. */
+  onCreated(chat: ChatSummary): void
   onClose(): void
 }
 
-function AddColumn({ chats, existing, status, onRefresh, onPick, onClose }: AddProps) {
+function AddColumn({ chats, existing, status, selfId, onRefresh, onPick, onCreate, onCreated, onClose }: AddProps) {
+  const [view, setView] = useState<'pick' | 'new'>('pick')
   const [q, setQ] = useState('')
   const dialogRef = useRef<HTMLDialogElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -206,35 +218,166 @@ function AddColumn({ chats, existing, status, onRefresh, onPick, onClose }: AddP
     >
       <div className="dialog-body">
         <header className="dialog-head">
-          <h2 id="add-title">/add column</h2>
+          <h2 id="add-title">{view === 'new' ? '/new group' : '/add column'}</h2>
           <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
             ×
           </button>
         </header>
-        <label htmlFor="add-q" className="sr">
-          Filter chats
-        </label>
-        <input id="add-q" ref={inputRef} className="field" placeholder="filter chats…" value={q} onChange={(e) => setQ(e.target.value)} />
-        {status !== 'ready' ? (
-          <p className="log-note"># connect first, then your chats show up here</p>
-        ) : list.length === 0 ? (
-          <p className="log-note"># nothing left to add</p>
+        {view === 'new' ? (
+          <NewGroupForm
+            people={chats.filter((c) => c.kind === 'dm' && c.id !== selfId && !c.deleted)}
+            onCreate={onCreate}
+            onCreated={onCreated}
+            onBack={() => {
+              setView('pick')
+              setTimeout(() => inputRef.current?.focus())
+            }}
+            onClose={onClose}
+          />
         ) : (
-          <ul className="pick-list">
-            {list.map((c) => (
-              <li key={c.id}>
-                <button type="button" className="pick" onClick={() => onPick(c)}>
-                  <span className="pick-handle">{c.handle}</span>
-                  <span className="pick-title">
-                    {c.title} · {c.kind}
-                  </span>
-                  {c.unread > 0 && <span className="tab-badge">{c.unread}</span>}
-                </button>
-              </li>
-            ))}
-          </ul>
+          <>
+            <label htmlFor="add-q" className="sr">
+              Filter chats
+            </label>
+            <input id="add-q" ref={inputRef} className="field" placeholder="filter chats…" value={q} onChange={(e) => setQ(e.target.value)} />
+            {status !== 'ready' ? (
+              <p className="log-note"># connect first, then your chats show up here</p>
+            ) : (
+              <ul className="pick-list">
+                <li>
+                  <button type="button" className="pick pick--new" onClick={() => setView('new')}>
+                    <span className="pick-handle">+ new group</span>
+                    <span className="pick-title">name it, pick who's in</span>
+                  </button>
+                </li>
+                {list.length === 0 && <li className="log-note"># nothing else to add</li>}
+                {list.map((c) => (
+                  <li key={c.id}>
+                    <button type="button" className="pick" onClick={() => onPick(c)}>
+                      <span className="pick-handle">{c.handle}</span>
+                      <span className="pick-title">
+                        {c.title} · {c.kind}
+                      </span>
+                      {c.unread > 0 && <span className="tab-badge">{c.unread}</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </div>
     </dialog>
+  )
+}
+
+function groupError(err: unknown) {
+  const e = (err ?? {}) as { errorMessage?: string; message?: string }
+  const code = e.errorMessage || e.message || String(err)
+  if (code.includes('CHANNELS_TOO_MUCH')) return "you're in too many groups and channels to make another. leave one first."
+  if (code.includes('FLOOD')) return 'telegram says slow down. wait a few minutes and try again.'
+  if (code.includes('CHAT_TITLE_EMPTY')) return 'the group needs a name.'
+  return code
+}
+
+interface NewGroupProps {
+  people: ChatSummary[]
+  onCreate(title: string, memberIds: string[]): Promise<NewGroup>
+  onCreated(chat: ChatSummary): void
+  onBack(): void
+  onClose(): void
+}
+
+function NewGroupForm({ people, onCreate, onCreated, onBack, onClose }: NewGroupProps) {
+  const [name, setName] = useState('')
+  const [q, setQ] = useState('')
+  const [picked, setPicked] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [missing, setMissing] = useState<{ handle: string; names: string[] } | null>(null)
+
+  const needle = q.trim().toLowerCase()
+  const list = people.filter((p) => !needle || p.title.toLowerCase().includes(needle) || p.handle.includes(needle))
+  const toggle = (id: string) => setPicked((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
+
+  if (missing) {
+    return (
+      <div className="dialog-form">
+        <p className="log-note"># made {missing.handle}. it's open as a column.</p>
+        <p className="log-note log-note--warn" role="alert">
+          # telegram wouldn't add {missing.names.join(', ')}. that's usually their privacy settings: send them an invite link from a telegram
+          app.
+        </p>
+        <div className="actions">
+          <button type="button" className="btn btn--ink" onClick={onClose} autoFocus>
+            done
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <form
+      className="dialog-form"
+      onSubmit={async (e) => {
+        e.preventDefault()
+        const title = name.trim()
+        if (!title || busy) return
+        setBusy(true)
+        setError('')
+        try {
+          const made = await onCreate(title, picked)
+          onCreated(made.chat)
+          if (made.notAdded.length) setMissing({ handle: made.chat.handle, names: made.notAdded })
+          else onClose()
+        } catch (err) {
+          setError(groupError(err))
+        } finally {
+          setBusy(false)
+        }
+      }}
+    >
+      <button type="button" className="btn btn--sm" onClick={onBack}>
+        ← chats
+      </button>
+      <label htmlFor="ng-name" className="sr">
+        Group name
+      </label>
+      <input id="ng-name" className="field" placeholder="group name" maxLength={128} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+      <label htmlFor="ng-q" className="sr">
+        Filter people
+      </label>
+      <input id="ng-q" className="field" placeholder="filter people…" value={q} onChange={(e) => setQ(e.target.value)} />
+      <p className="log-note">
+        # {picked.length ? `${picked.length} in, plus you` : 'just you so far. tick people from your dms'}
+      </p>
+      {people.length === 0 ? (
+        <p className="log-note"># no dms to pick from yet. you can still make it and add people in telegram.</p>
+      ) : (
+        <ul className="pick-list">
+          {list.map((p) => (
+            <li key={p.id}>
+              <button type="button" className="pick" aria-pressed={picked.includes(p.id)} onClick={() => toggle(p.id)}>
+                <span className="pick-handle">
+                  <span aria-hidden="true">{picked.includes(p.id) ? '[x]' : '[ ]'}</span> {p.handle}
+                </span>
+                <span className="pick-title">{p.title}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && (
+        <p className="log-note log-note--warn" role="alert">
+          # {error}
+        </p>
+      )}
+      <div className="actions">
+        <button type="submit" className="btn btn--ink" disabled={busy || !name.trim()}>
+          {busy ? 'making…' : 'make group'}
+        </button>
+      </div>
+    </form>
   )
 }

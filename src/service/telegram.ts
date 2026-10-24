@@ -6,7 +6,8 @@ import { DeletedMessage, type DeletedMessageEvent } from 'telegram/events/Delete
 import { LogLevel } from 'telegram/extensions/Logger'
 import { getDisplayName, getPeerId } from 'telegram/Utils'
 import type { Entity } from 'telegram/define'
-import { Emitter, type ChatKind, type ChatService, type ChatSummary, type LoginSteps, type Me, type Message, type ServiceEvent } from './types'
+import { slug } from '../format'
+import { Emitter, type ChatKind, type ChatService, type ChatSummary, type LoginSteps, type Me, type Message, type NewGroup, type ServiceEvent } from './types'
 
 /**
  * MTProto user client (GramJS) over WebSocket, straight from the browser to
@@ -142,6 +143,7 @@ export class TelegramService implements ChatService {
         handle: handleFor(kind, d.entity, title),
         unread: d.unreadCount,
         online: d.entity instanceof Api.User ? d.entity.status instanceof Api.UserStatusOnline : undefined,
+        deleted: (d.entity instanceof Api.User && d.entity.deleted) || undefined,
       })
     }
     return out
@@ -171,6 +173,29 @@ export class TelegramService implements ChatService {
   async markRead(chatId: string) {
     const entity = this.entities.get(chatId)
     if (entity) await this.client.markAsRead(entity).catch(() => {})
+  }
+
+  async createGroup(title: string, memberIds: string[]): Promise<NewGroup> {
+    // A supergroup, not a basic group: it can start with just you, and Telegram never migrates it to a new id later.
+    const updates = await this.client.invoke(new Api.channels.CreateChannel({ megagroup: true, title, about: '' }))
+    const channel = 'chats' in updates ? updates.chats.find((c) => c instanceof Api.Channel) : undefined
+    if (!(channel instanceof Api.Channel)) throw new Error('Telegram made the group but did not say which one. Reopen + column to find it.')
+    const id = getPeerId(channel)
+    this.entities.set(id, channel)
+    this.titles.set(id, title)
+    const nameOf = (userId: string) => this.titles.get(userId) ?? userId
+    const users = memberIds.flatMap((m) => this.entities.get(m) ?? [])
+    let notAdded = memberIds.filter((m) => !this.entities.has(m)).map(nameOf)
+    if (users.length) {
+      try {
+        const invited = await this.client.invoke(new Api.channels.InviteToChannel({ channel, users }))
+        notAdded = notAdded.concat(invited.missingInvitees.map((m) => nameOf(m.userId.toString())))
+      } catch {
+        // The group exists either way, so say who's missing instead of failing the whole thing.
+        notAdded = memberIds.map(nameOf)
+      }
+    }
+    return { chat: { id, title, kind: 'group', handle: handleFor('group', channel, title), unread: 0 }, notAdded }
   }
 
   on(listener: Parameters<ChatService['on']>[0]) {
@@ -321,16 +346,6 @@ export class TelegramService implements ChatService {
   }
 }
 
-function slug(s: string) {
-  return (
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 16) || 'chat'
-  )
-}
-
 function handleFor(kind: ChatKind, entity: Entity, title: string) {
   if (kind === 'dm') {
     const user = entity as Api.User
@@ -356,6 +371,7 @@ function mediaOf(m: Api.Message): Message['media'] {
 
 function describeAction(action: Api.TypeMessageAction | undefined) {
   if (!action) return 'did something'
+  if (action instanceof Api.MessageActionChannelCreate || action instanceof Api.MessageActionChatCreate) return 'created the group'
   if (action instanceof Api.MessageActionChatAddUser || action instanceof Api.MessageActionChatJoinedByLink) return 'joined'
   if (action instanceof Api.MessageActionChatDeleteUser) return 'left'
   if (action instanceof Api.MessageActionChatEditPhoto) return 'changed the group photo'

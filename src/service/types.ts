@@ -8,6 +8,14 @@ export interface ChatSummary {
   handle: string
   unread: number
   online?: boolean
+  /** A deleted account: its history still shows, but it can't be added to anything. */
+  deleted?: boolean
+}
+
+export interface NewGroup {
+  chat: ChatSummary
+  /** People Telegram wouldn't add, usually because of their privacy settings. */
+  notAdded: string[]
 }
 
 export type MediaKind = 'photo' | 'video' | 'file' | 'sticker' | 'voice' | 'other'
@@ -62,6 +70,8 @@ export interface ChatService {
   history(chatId: string, limit?: number): Promise<Message[]>
   send(chatId: string, text: string): Promise<Message>
   markRead(chatId: string): Promise<void>
+  /** Makes a group with you and `memberIds` (people from your DMs) in it. */
+  createGroup(title: string, memberIds: string[]): Promise<NewGroup>
   /** Ends the account session on the server, where that means anything. */
   logout?(): Promise<void>
   on(listener: (e: ServiceEvent) => void): () => void

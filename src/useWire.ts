@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createService } from './service'
-import type { ChatService, ChatSummary, ConnStatus, Message, ServiceEvent } from './service/types'
+import type { ChatService, ChatSummary, ConnStatus, Message, NewGroup, ServiceEvent } from './service/types'
 import { SESSION_KEY, saveSession, settingsStore, type Settings } from './settings'
 import { showNotification, tick } from './alerts'
 
@@ -18,6 +18,8 @@ export interface Wire {
   send(chatId: string, text: string): Promise<void>
   markRead(chatId: string): void
   refreshChats(): Promise<void>
+  /** Makes the group and lists it in `chats`; opening it as a column is up to the caller. */
+  createGroup(title: string, memberIds: string[]): Promise<NewGroup>
   /** Rejects, and keeps the session, if Telegram didn't confirm the sign-out. */
   logout(): Promise<void>
   wipeSession(): void
@@ -339,6 +341,16 @@ export function useWire(settings: Settings): Wire {
     if (live.current === service) setChats(cs)
   }, [service, status])
 
+  const createGroup = useCallback(
+    async (title: string, memberIds: string[]) => {
+      if (!service) throw new Error('Not connected')
+      const made = await service.createGroup(title, memberIds)
+      if (live.current === service) setChats((cs) => [made.chat, ...cs.filter((c) => c.id !== made.chat.id)])
+      return made
+    },
+    [service],
+  )
+
   const logout = useCallback(async () => {
     if (!service?.logout) return
     await service.logout()
@@ -354,5 +366,5 @@ export function useWire(settings: Settings): Wire {
     setNonce((n) => n + 1)
   }, [])
 
-  return { service, status, detail, chats, messages, typing, unread, loadErrors, retryHistory, send, markRead, refreshChats, logout, wipeSession }
+  return { service, status, detail, chats, messages, typing, unread, loadErrors, retryHistory, send, markRead, refreshChats, createGroup, logout, wipeSession }
 }

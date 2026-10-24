@@ -745,6 +745,33 @@ a {
   white-space: nowrap;
 }
 
+.pick--new .pick-handle,
+.pick[aria-pressed='true'] .pick-handle {
+  color: var(--accent-text);
+}
+
+.pick-list .log-note {
+  padding: 0 6px;
+}
+
+/* The new-group form shares the dialog's flex column, so its people list scrolls and the button stays put. */
+.dialog-form {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dialog-form > .btn--sm {
+  align-self: flex-start;
+}
+
+.dialog-form .actions,
+.dialog-form .log-note {
+  margin: 0;
+  padding: 0;
+}
+
 /* ---------- settings + login ---------- */
 
 .page {
