@@ -140,11 +140,13 @@ export function Deck({ settings, wire, adding, setAdding }: Props) {
             messages={own(wire.messages, c.chatId)}
             typing={own(wire.typing, c.chatId)}
             unread={own(wire.unread, c.chatId) ?? 0}
+            loadError={own(wire.loadErrors, c.chatId)}
             settings={settings}
             isFirst={i === 0}
             isLast={i === columns.length - 1}
             onSend={(text) => wire.send(c.chatId, text)}
             onRead={() => wire.markRead(c.chatId)}
+            onRetry={() => wire.retryHistory(c.chatId)}
             onMove={(dir) => move(i, dir)}
             onClose={() => close(i)}
           />

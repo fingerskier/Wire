@@ -476,6 +476,15 @@ a {
   color: var(--muted);
 }
 
+.log-note--warn {
+  color: var(--warn);
+}
+
+.btn--sm {
+  min-height: 32px;
+  padding: 0 10px;
+}
+
 .line {
   display: grid;
   grid-template-columns: 6ch 8ch minmax(0, 1fr);

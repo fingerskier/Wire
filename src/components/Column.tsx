@@ -8,11 +8,14 @@ interface Props {
   messages: Message[] | undefined
   typing?: string
   unread: number
+  /** Why history failed to load, if it did. */
+  loadError?: string
   settings: Settings
   isFirst: boolean
   isLast: boolean
   onSend(text: string): Promise<void>
   onRead(): void
+  onRetry(): void
   onMove(dir: -1 | 1): void
   onClose(): void
 }
@@ -33,7 +36,7 @@ function linkify(text: string): ReactNode[] {
 
 const HIDDEN_SERVICE = new Set(['joined', 'left'])
 
-export function Column({ column, messages, typing, unread, settings, isFirst, isLast, onSend, onRead, onMove, onClose }: Props) {
+export function Column({ column, messages, typing, unread, loadError, settings, isFirst, isLast, onSend, onRead, onRetry, onMove, onClose }: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
 
@@ -83,8 +86,18 @@ export function Column({ column, messages, typing, unread, settings, isFirst, is
       </header>
 
       <div className="log" ref={logRef} onScroll={onScroll} role="log" aria-live="polite" aria-label={`${column.title} messages`}>
-        {messages === undefined && <p className="log-note">loading…</p>}
-        {messages?.length === 0 && <p className="log-note">no messages yet</p>}
+        {loadError ? (
+          <p className="log-note log-note--warn" role="alert">
+            # couldn't load history ({loadError}){' '}
+            <button type="button" className="btn btn--warn btn--sm" onClick={onRetry}>
+              retry
+            </button>
+          </p>
+        ) : messages === undefined ? (
+          <p className="log-note">loading…</p>
+        ) : (
+          messages.length === 0 && <p className="log-note">no messages yet</p>
+        )}
         {visible.map((m) => {
           const day = dayKey(m.date)
           const divider = day !== lastDay

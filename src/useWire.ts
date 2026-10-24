@@ -12,6 +12,9 @@ export interface Wire {
   messages: Record<string, Message[]>
   typing: Record<string, string>
   unread: Record<string, number>
+  /** Columns whose history request failed, with why. */
+  loadErrors: Record<string, string>
+  retryHistory(chatId: string): void
   send(chatId: string, text: string): Promise<void>
   markRead(chatId: string): void
   refreshChats(): Promise<void>
@@ -21,6 +24,17 @@ export interface Wire {
 }
 
 const TYPING_MS = 6000
+
+/** Edits and deletes seen while a column's history is in flight; the snapshot may predate them. */
+interface LiveChanges {
+  edits: Map<string, Message>
+  deleted: Set<string>
+}
+
+/** Account-wide deletes (no chat) only touch non-channel chats; channel ids are marked -100…. */
+function deleteApplies(target: string | undefined, chatId: string) {
+  return target ? chatId === target : !chatId.startsWith('-100')
+}
 
 /** Chat ids come from storage and imports; never let `constructor` & co. resolve to inherited values. */
 export function own<T>(rec: Record<string, T>, key: string): T | undefined {
@@ -49,8 +63,11 @@ export function useWire(settings: Settings): Wire {
   const [messages, setMessages] = useState<Record<string, Message[]>>({})
   const [typing, setTyping] = useState<Record<string, string>>({})
   const [unread, setUnread] = useState<Record<string, number>>({})
+  const [loadErrors, setLoadErrors] = useState<Record<string, string>>({})
+  const [retries, setRetries] = useState(0)
   const typingTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   const loaded = useRef(new Set<string>())
+  const pending = useRef(new Map<string, LiveChanges>())
   /** The service whose results may still land in state. Anything else is stale. */
   const live = useRef<ChatService | null>(null)
 
@@ -59,8 +76,10 @@ export function useWire(settings: Settings): Wire {
     setMessages({})
     setUnread({})
     setTyping({})
+    setLoadErrors({})
     setDetail(undefined)
     loaded.current = new Set()
+    pending.current = new Map()
     if (!configured) {
       setStatus('idle')
       return
@@ -112,6 +131,7 @@ export function useWire(settings: Settings): Wire {
           )
           return
         case 'edited':
+          pending.current.get(e.message.chatId)?.edits.set(e.message.id, e.message)
           setMessages((all) => {
             const list = own(all, e.message.chatId)
             if (!list?.some((m) => m.id === e.message.id)) return all
@@ -120,13 +140,14 @@ export function useWire(settings: Settings): Wire {
           return
         case 'deleted': {
           const gone = new Set(e.ids)
+          for (const [chatId, p] of pending.current) {
+            if (deleteApplies(e.chatId, chatId)) for (const id of e.ids) p.deleted.add(id)
+          }
           setMessages((all) => {
             const next: Record<string, Message[]> = {}
             let changed = false
             for (const [chatId, list] of Object.entries(all)) {
-              // Without a chat, ids are account-wide and only apply to non-channel chats (marked -100…).
-              const applies = e.chatId ? chatId === e.chatId : !chatId.startsWith('-100')
-              const kept = applies ? list.filter((m) => !gone.has(m.id)) : list
+              const kept = deleteApplies(e.chatId, chatId) ? list.filter((m) => !gone.has(m.id)) : list
               if (kept.length !== list.length) changed = true
               next[chatId] = kept
             }
@@ -203,28 +224,51 @@ export function useWire(settings: Settings): Wire {
     for (const id of [...loaded.current]) {
       if (ids.includes(id)) continue
       loaded.current.delete(id)
+      pending.current.delete(id)
       setMessages((all) => without(all, id))
     }
+    setLoadErrors((errs) => {
+      const stale = Object.keys(errs).filter((id) => !ids.includes(id))
+      return stale.length ? stale.reduce(without, errs) : errs
+    })
     for (const id of ids) {
       if (loaded.current.has(id)) continue
       loaded.current.add(id)
+      const changes: LiveChanges = { edits: new Map(), deleted: new Set() }
+      pending.current.set(id, changes)
       service
         .history(id)
         .then((list) => {
-          if (live.current !== service || !loaded.current.has(id)) return
+          if (live.current !== service || pending.current.get(id) !== changes) return
+          pending.current.delete(id)
+          setLoadErrors((errs) => without(errs, id))
           setMessages((all) => {
-            const buffered = (own(all, id) ?? []).filter((m) => !list.some((x) => x.id === m.id))
-            return { ...all, [id]: list.concat(buffered) }
+            // Anything already in the column arrived live, so it is at least as fresh as the snapshot.
+            const current = own(all, id) ?? []
+            const fresh = new Map(current.map((m) => [m.id, m]))
+            const merged = list
+              .filter((m) => !changes.deleted.has(m.id))
+              .map((m) => {
+                const newer = fresh.get(m.id) ?? changes.edits.get(m.id)
+                return newer ? { ...newer, replyTo: newer.replyTo ?? m.replyTo } : m
+              })
+            const inSnapshot = new Set(list.map((m) => m.id))
+            return { ...all, [id]: merged.concat(current.filter((m) => !inSnapshot.has(m.id))) }
           })
         })
         .catch((err) => {
-          if (live.current !== service) return
+          if (live.current !== service || pending.current.get(id) !== changes) return
+          pending.current.delete(id)
           loaded.current.delete(id)
-          setMessages((all) => ({ ...all, [id]: own(all, id) ?? [] }))
-          setDetail(String(err?.message ?? err))
+          setLoadErrors((errs) => ({ ...errs, [id]: String(err?.message ?? err) }))
         })
     }
-  }, [service, status, columnIds])
+  }, [service, status, columnIds, retries])
+
+  const retryHistory = useCallback((chatId: string) => {
+    setLoadErrors((errs) => without(errs, chatId))
+    setRetries((n) => n + 1)
+  }, [])
 
   const send = useCallback(
     async (chatId: string, text: string) => {
@@ -266,5 +310,5 @@ export function useWire(settings: Settings): Wire {
     setNonce((n) => n + 1)
   }, [])
 
-  return { service, status, detail, chats, messages, typing, unread, send, markRead, refreshChats, logout, wipeSession }
+  return { service, status, detail, chats, messages, typing, unread, loadErrors, retryHistory, send, markRead, refreshChats, logout, wipeSession }
 }
