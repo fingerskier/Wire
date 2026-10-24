@@ -1,3 +1,14 @@
+import type { ConnStatus } from './service/types'
+
+export const STATUS_TEXT: Record<ConnStatus, string> = {
+  idle: 'not set up',
+  connecting: 'connecting',
+  ready: 'live',
+  'needs-login': 'signed out',
+  offline: 'offline',
+  error: 'error',
+}
+
 export function clockTime(ms: number, clock: '24h' | '12h') {
   const d = new Date(ms)
   const h = d.getHours()

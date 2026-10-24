@@ -830,6 +830,25 @@ a {
   padding: 8px 0;
 }
 
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step .row-key {
+  white-space: nowrap;
+}
+
+.step--done .row-key {
+  color: var(--muted);
+}
+
+.step--now .row-key {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -859,6 +878,11 @@ a {
 
   .row {
     grid-template-columns: 10ch minmax(0, 1fr);
+  }
+
+  /* "[ ] sign in" needs the extra width. */
+  .row.step {
+    grid-template-columns: 12ch minmax(0, 1fr);
   }
 }
 

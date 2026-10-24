@@ -1,17 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChatSummary, ConnStatus } from '../service/types'
+import { STATUS_TEXT } from '../format'
 import { setColumns, type ColumnConf, type Settings } from '../settings'
 import { own, type Wire } from '../useWire'
 import { Column } from './Column'
-
-const STATUS_TEXT: Record<ConnStatus, string> = {
-  idle: 'not set up',
-  connecting: 'connecting',
-  ready: 'live',
-  'needs-login': 'signed out',
-  offline: 'offline',
-  error: 'error',
-}
 
 interface Props {
   settings: Settings
