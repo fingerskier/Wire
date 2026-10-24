@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChatSummary, ConnStatus, NewGroup } from '../service/types'
 import { STATUS_TEXT } from '../format'
-import { setColumns, type ColumnConf, type Settings } from '../settings'
+import { setColumns, settingsStore, type ColumnConf, type Settings } from '../settings'
 import { own, type Wire } from '../useWire'
 import { Column } from './Column'
 
@@ -59,7 +59,11 @@ export function Deck({ settings, wire, adding, setAdding }: Props) {
 
   const open = (chat: ChatSummary) => {
     const col: ColumnConf = { chatId: chat.id, title: chat.title, handle: chat.handle, kind: chat.kind, width: 'normal' }
-    setColumns(mode, [...columns, col])
+    // Against the columns as they are now: making a group can finish long after this render, with columns changed since.
+    settingsStore.set((s) => {
+      const cols = s.columns[mode]
+      return cols.some((c) => c.chatId === chat.id) ? {} : { columns: { ...s.columns, [mode]: [...cols, col] } }
+    })
     setTimeout(() => jump(chat.id), 60)
   }
 
@@ -295,6 +299,14 @@ function NewGroupForm({ people, onCreate, onCreated, onBack, onClose }: NewGroup
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [missing, setMissing] = useState<{ handle: string; names: string[] } | null>(null)
+  /** False once the form is gone (back, close, Escape) while Telegram is still making the group. */
+  const shown = useRef(true)
+  useEffect(() => {
+    shown.current = true
+    return () => {
+      shown.current = false
+    }
+  }, [])
 
   const needle = q.trim().toLowerCase()
   const list = people.filter((p) => !needle || p.title.toLowerCase().includes(needle) || p.handle.includes(needle))
@@ -328,13 +340,15 @@ function NewGroupForm({ people, onCreate, onCreated, onBack, onClose }: NewGroup
         setError('')
         try {
           const made = await onCreate(title, picked)
+          // The group exists now, so open it even if the form was dismissed; just don't touch a dialog that's gone (or reopened).
           onCreated(made.chat)
+          if (!shown.current) return
           if (made.notAdded.length) setMissing({ handle: made.chat.handle, names: made.notAdded })
           else onClose()
         } catch (err) {
-          setError(groupError(err))
+          if (shown.current) setError(groupError(err))
         } finally {
-          setBusy(false)
+          if (shown.current) setBusy(false)
         }
       }}
     >

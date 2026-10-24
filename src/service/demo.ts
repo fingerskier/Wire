@@ -138,7 +138,9 @@ export class DemoService implements ChatService {
   async markRead() {}
 
   async createGroup(title: string, memberIds: string[]): Promise<NewGroup> {
-    const chat: ChatSummary = { id: `group-${nextId()}`, title, kind: 'group', handle: '#' + slug(title), unread: 0 }
+    // Columns outlive a reload but `seq` restarts, so the id must not come from it.
+    const id = `group-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+    const chat: ChatSummary = { id, title, kind: 'group', handle: '#' + slug(title), unread: 0 }
     const crowd = memberIds.filter((m) => Object.hasOwn(PEOPLE, m))
     this.made.unshift(chat)
     this.members.set(chat.id, crowd)
